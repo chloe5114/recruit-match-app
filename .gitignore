@@ -3,3 +3,9 @@ dist/
 .DS_Store
 desktop-qa.png
 mobile-qa.png
+.env
+.env.*
+!.env.example
+.dev.vars
+worker/.dev.vars
+.wrangler/

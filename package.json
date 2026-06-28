@@ -2,16 +2,22 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
-    "preview": "vite preview --host 127.0.0.1"
+    "preview": "vite preview --host 127.0.0.1",
+    "worker:dev": "wrangler dev --config worker/wrangler.jsonc --port 8787",
+    "worker:check": "wrangler deploy --config worker/wrangler.jsonc --dry-run",
+    "worker:deploy": "wrangler deploy --config worker/wrangler.jsonc"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
     "lucide-react": "latest",
+    "mammoth": "^1.12.0",
+    "pdfjs-dist": "^6.1.200",
     "react": "latest",
     "react-dom": "latest",
     "vite": "latest"
   },
   "devDependencies": {
-    "playwright": "^1.61.1"
+    "playwright": "^1.61.1",
+    "wrangler": "^4.105.0"
   }
 }
