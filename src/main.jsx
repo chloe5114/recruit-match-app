@@ -278,8 +278,7 @@ function App() {
     }));
     setSelectedCandidateId(placeholders[0].id);
 
-    await Promise.all(
-      files.map(async (file, index) => {
+    for (const [index, file] of files.entries()) {
         const id = placeholders[index].id;
         try {
           const extracted = await parseResumeFile(file);
@@ -304,9 +303,7 @@ function App() {
                 ...local,
                 pending: [
                   ...(local.pending || []),
-                  error.message === "AI_SERVICE_NOT_CONFIGURED"
-                    ? "AI 服务未配置，当前使用本地解析"
-                    : "AI 解析暂时失败，已使用本地解析结果",
+                  `AI 识别未完成：${error.message}`,
                 ],
               };
             }
@@ -317,6 +314,7 @@ function App() {
             source: "上传",
             parseStatus,
             createdAt: "刚刚",
+            _images: extracted.images,
           });
         } catch (error) {
           replaceCandidate(activeJob.id, id, {
@@ -328,8 +326,7 @@ function App() {
             parseStatus: "error",
           });
         }
-      }),
-    );
+    }
     flash(`已处理 ${files.length} 份简历，排名已刷新`);
   }
 
@@ -340,33 +337,44 @@ function App() {
       return;
     }
     setIsParsingPaste(true);
-    const parsed = await Promise.all(
-      blocks.map(async (text, index) => {
+    const parsed = [];
+    for (const [index, text] of blocks.entries()) {
         const fileName = `粘贴简历-${index + 1}.txt`;
         const local = parseResumeLocally({ fileName, text });
-        if (!aiEnabled) return local;
-        try {
-          return await parseResumeWithAi({
-            fileName,
-            text,
-            images: [],
-            job: activeJob,
-            apiKey,
-          });
-        } catch {
-          return {
-            ...local,
-            pending: [...(local.pending || []), "AI 解析暂时失败，当前展示本地识别结果"],
-          };
+        if (!aiEnabled) {
+          parsed.push({ ...local, _parseStatus: "review" });
+          continue;
         }
-      }),
-    );
+        try {
+          parsed.push(
+            {
+              ...(await parseResumeWithAi({
+                fileName,
+                text,
+                images: [],
+                job: activeJob,
+                apiKey,
+              })),
+              _parseStatus: "success",
+            },
+          );
+        } catch (error) {
+          parsed.push({
+            ...local,
+            pending: [
+              ...(local.pending || []),
+              `AI 识别未完成：${error.message}`,
+            ],
+            _parseStatus: "review",
+          });
+        }
+    }
     const now = Date.now();
     const candidatesToAdd = parsed.map((candidate, index) => ({
       ...candidate,
       id: `paste-${now}-${index}`,
       source: "粘贴",
-      parseStatus: aiEnabled ? "success" : "review",
+      parseStatus: candidate._parseStatus || "review",
       createdAt: "刚刚",
     }));
     setResumesByJob((map) => ({
@@ -424,6 +432,48 @@ function App() {
     setApiKeyDraft("");
     setShowApiModal(false);
     flash("已移除本浏览器中的智谱 Key");
+  }
+
+  async function retryCandidate(candidate) {
+    if (!aiEnabled) {
+      setShowApiModal(true);
+      flash("请先连接智谱 AI");
+      return;
+    }
+    replaceCandidate(activeJob.id, candidate.id, {
+      ...candidate,
+      parseStatus: "parsing",
+    });
+    try {
+      const parsed = await parseResumeWithAi({
+        fileName: candidate.fileName,
+        text: candidate.text || "",
+        images: candidate._images || [],
+        job: activeJob,
+        apiKey,
+      });
+      replaceCandidate(activeJob.id, candidate.id, {
+        ...parsed,
+        id: candidate.id,
+        source: candidate.source,
+        parseStatus: "success",
+        createdAt: "刚刚",
+        _images: candidate._images || [],
+      });
+      flash(`${parsed.name} 已重新识别`);
+    } catch (error) {
+      replaceCandidate(activeJob.id, candidate.id, {
+        ...candidate,
+        parseStatus: "review",
+        pending: [
+          ...new Set([
+            ...(candidate.pending || []),
+            `AI 识别未完成：${error.message}`,
+          ]),
+        ],
+      });
+      flash(error.message);
+    }
   }
 
   function copySummary() {
@@ -884,14 +934,14 @@ function App() {
             </div>
           </section>
 
-          <CandidateDetail candidate={selected} />
+          <CandidateDetail candidate={selected} onRetry={retryCandidate} />
         </section>
       </main>
     </div>
   );
 }
 
-function CandidateDetail({ candidate }) {
+function CandidateDetail({ candidate, onRetry }) {
   if (!candidate) {
     return (
       <aside className="detail-panel panel empty-detail">
@@ -917,7 +967,19 @@ function CandidateDetail({ candidate }) {
       <div className="detail-scroll">
         <div className="confidence-row">
           <ParseState status={candidate.parseStatus} />
-          <span>识别可信度 {candidate.confidence || 0}%</span>
+          <div>
+            <span>识别可信度 {candidate.confidence || 0}%</span>
+            {["review", "error"].includes(candidate.parseStatus) &&
+            (candidate.text || candidate._images?.length) ? (
+              <button
+                className="retry-button"
+                onClick={() => onRetry(candidate)}
+              >
+                <RefreshCw size={11} />
+                重新识别
+              </button>
+            ) : null}
+          </div>
         </div>
 
         <EducationStatus

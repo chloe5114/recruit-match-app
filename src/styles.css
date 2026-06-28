@@ -883,6 +883,23 @@ button.result-row:last-child {
   font-size: 10px;
 }
 
+.confidence-row > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.retry-button {
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--teal);
+  background: transparent;
+  font-size: 10px;
+  font-weight: 720;
+}
+
 .breakdown {
   padding: 10px 0 12px;
   border-bottom: 1px solid var(--line);

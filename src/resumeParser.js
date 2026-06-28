@@ -1,3 +1,5 @@
+import { jsonrepair } from "jsonrepair";
+
 const SKILL_DICTIONARY = [
   "Excel",
   "SQL",
@@ -153,32 +155,83 @@ async function parseDirectWithZhipu({ fileName, text, images, job, apiKey }) {
         { type: "text", text: prompt },
       ]
     : prompt;
-  const response = await fetch(ZHIPU_ENDPOINT, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: useVision ? "glm-4.6v-flash" : "glm-4-flash-250414",
-      messages: [
-        {
-          role: "system",
-          content: "你是严谨的中文招聘简历解析器。只依据输入内容提取信息，不得猜测或补造。",
-        },
-        { role: "user", content },
-      ],
-      response_format: { type: "json_object" },
-      temperature: 0.1,
-      stream: false,
-    }),
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(payload?.error?.message || "智谱 API 调用失败，请检查 Key 或额度");
+  const requestBody = {
+    model: useVision ? "glm-4.6v-flash" : "glm-4-flash-250414",
+    messages: [
+      {
+        role: "system",
+        content: "你是严谨的中文招聘简历解析器。只依据输入内容提取信息，不得猜测或补造。",
+      },
+      { role: "user", content },
+    ],
+    temperature: 0.1,
+    stream: false,
+  };
+  let payload;
+  try {
+    payload = await requestZhipu(requestBody, apiKey, true);
+  } catch (error) {
+    if (!error.retryWithoutFormat) throw error;
+    payload = await requestZhipu(requestBody, apiKey, false);
   }
   const raw = payload?.choices?.[0]?.message?.content || "";
   return normalizeCandidate(parseJsonContent(raw), fileName, text);
+}
+
+async function requestZhipu(requestBody, apiKey, useJsonMode) {
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 50000);
+    try {
+      const response = await fetch(ZHIPU_ENDPOINT, {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          ...requestBody,
+          ...(useJsonMode ? { response_format: { type: "json_object" } } : {}),
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (response.ok) return payload;
+
+      const code = String(payload?.error?.code || "");
+      const message = payload?.error?.message || "";
+      if (
+        useJsonMode &&
+        response.status === 400 &&
+        ["1210", "1214", "1215"].includes(code)
+      ) {
+        const formatError = new Error(message || "当前模型不支持 JSON 模式");
+        formatError.retryWithoutFormat = true;
+        throw formatError;
+      }
+
+      const error = new Error(humanizeApiError(response.status, code, message));
+      const retryable =
+        [429, 500, 502, 503, 504].includes(response.status) ||
+        ["1234", "1302", "1305"].includes(code);
+      if (!retryable || attempt === 2) throw error;
+      lastError = error;
+    } catch (error) {
+      if (error.retryWithoutFormat) throw error;
+      if (attempt === 2) {
+        if (error.name === "AbortError") {
+          throw new Error("智谱响应超时，请稍后重试");
+        }
+        throw error;
+      }
+      lastError = error;
+    } finally {
+      window.clearTimeout(timer);
+    }
+    await delay(800 * 2 ** attempt);
+  }
+  throw lastError || new Error("智谱 API 调用失败");
 }
 
 export function parseResumeLocally({ fileName, text }) {
@@ -287,14 +340,39 @@ ${String(text || "该文件为扫描件，请根据图片识别").slice(0, 42000
 }
 
 function parseJsonContent(raw) {
-  const cleaned = String(raw)
+  const source = Array.isArray(raw)
+    ? raw.map((item) => item?.text || item?.content || "").join("")
+    : raw;
+  const cleaned = String(source)
     .replace(/^```json\s*/i, "")
     .replace(/```$/i, "")
     .trim();
   const start = cleaned.indexOf("{");
   const end = cleaned.lastIndexOf("}");
   if (start < 0 || end <= start) throw new Error("模型返回内容不是有效 JSON");
-  return JSON.parse(cleaned.slice(start, end + 1));
+  const jsonText = cleaned.slice(start, end + 1);
+  try {
+    return JSON.parse(jsonText);
+  } catch {
+    return JSON.parse(jsonrepair(jsonText));
+  }
+}
+
+function humanizeApiError(status, code, message) {
+  if (status === 401 || code.startsWith("100")) {
+    return "智谱 API Key 无效或已失效，请重新连接";
+  }
+  if (code === "1261") return "简历文本过长，请拆分后重试";
+  if (code === "1304") return "今日免费调用额度已用完";
+  if (["1302", "1305"].includes(code) || status === 429) {
+    return "智谱当前繁忙或请求过快，已自动重试仍未成功";
+  }
+  if (status >= 500) return "智谱服务暂时异常，请稍后重试";
+  return message || `智谱 API 调用失败（${status}）`;
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
 function detectName(text) {
